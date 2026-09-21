@@ -12,6 +12,10 @@
     <key>LSMinimumSystemVersion</key><string>14.2</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key><true/>
+    </dict>
     <key>NSMicrophoneUsageDescription</key><string>Listen while you hold Control–Option–Space to give a desktop command.</string>
     <key>NSSpeechRecognitionUsageDescription</key><string>Turn your spoken command into text. Apple may process audio online when on-device recognition is unavailable.</string>
     <key>NSAudioCaptureUsageDescription</key><string>Show a music visualiser in the widget while audio is playing. Audio is reduced to a few levels on the spot and never recorded or sent anywhere.</string>
