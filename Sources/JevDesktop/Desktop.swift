@@ -336,14 +336,14 @@ enum Desktop {
         var seenLabels = Set<String>()
         var folderAccessError: String?
         var typingTargets = Set<AXUIElement>()
-        // Why an input a person can see did not reach Jev; logged with every capture.
+        // Why an input a person can see did not reach Laya; logged with every capture.
         var droppedInputs: [String] = []
         let dumpTree = UserDefaults.standard.bool(forKey: "DumpTree")
         var walked = 0
         var webAreas = 0
         var pageItems = 0
         let began = Date()
-        // Field metric for any app on any machine: what was walked, what reached Jev, and why the rest did not.
+        // Field metric for any app on any machine: what was walked, what reached Laya, and why the rest did not.
         var unnamedLeaves = 0, namedWithoutVerb = 0
         // Naming quality and where the capture time goes.
         var roleOnlyNames = 0, offeredTargets = 0, marks: [(String, Date)] = []
