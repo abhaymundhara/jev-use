@@ -87,9 +87,13 @@ public enum LayaClient {
         let instructions: String
         let criteria: [String: String]
     }
-    private struct Request: Encodable {
-        let state: CommandContext
+    private struct Request<State: Encodable>: Encodable {
+        let state: State
         let questions: [String: Question]
+    }
+
+    private static func requestBody<State: Encodable>(state: State, questions: [String: Question]) throws -> Data {
+        try JSONEncoder().encode(Request(state: state, questions: questions))
     }
 
     /// Fallback without a planner key: one Choice over every action, asking for the next step of the whole command.
@@ -138,7 +142,7 @@ public enum LayaClient {
                 "true": "The command states an amount and the repetitions in `completedSteps` plus one are still fewer than needed (about 5 seconds per arrow press, one screen per scroll).",
                 "false": "No amount is stated, or the completed repetitions plus one already cover it."
             ])
-        return try JSONEncoder().encode(Request(state: context, questions: questions))
+        return try requestBody(state: context, questions: questions)
     }
 
     public static func decide(context: CommandContext, candidates: [Candidate]) async throws -> Decision {
@@ -223,7 +227,6 @@ public enum LayaClient {
 
     /// Build the cycle request. `operations` maps operation id to description; `heads` maps a target head to its options (id → description).
     static func cycleBody(state: CycleState, operations: [String: String], heads: [String: [String: String]]) throws -> Data {
-        struct Request: Encodable { let state: CycleState; let questions: [String: Question] }
         var questions: [String: Question] = [
             "operation": Question(type: "choice", instructions: cycleRules + "\nWhich operation should run now?", criteria: operations)
         ]
@@ -268,7 +271,7 @@ public enum LayaClient {
                 criteria: ["true": "The goal asks for the same steps in each window of the application.",
                            "false": "The goal is about one window or one place only, or it only opens, closes or arranges windows."])
         }
-        return try JSONEncoder().encode(Request(state: state, questions: questions))
+        return try requestBody(state: state, questions: questions)
     }
 
     public static func cycle(state: CycleState, operations: [String: String], heads: [String: [String: String]]) async throws -> Decision {
@@ -355,7 +358,6 @@ public enum LayaClient {
     }
 
     static func groundingBody(context: GroundingContext, candidates: [Candidate]) throws -> Data {
-        struct Request: Encodable { let state: GroundingContext; let questions: [String: Question] }
         let noun: String
         switch context.step.kind {
         case .openApp, .quitApp: noun = "application"
@@ -378,7 +380,7 @@ public enum LayaClient {
                                      criteria: ["true": "The step's effect is already visible (for example the requested site or app is already the current window).",
                                                 "false": "The step still needs to be performed."])
         ]
-        return try JSONEncoder().encode(Request(state: context, questions: questions))
+        return try requestBody(state: context, questions: questions)
     }
 
     public static func ground(context: GroundingContext, candidates: [Candidate]) async throws -> Decision {
