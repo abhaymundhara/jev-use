@@ -52,6 +52,12 @@ public struct Decision: Decodable {
         }
         return candidate
     }
+
+    fileprivate func withAnswer(_ answer: Answer, for head: String) -> Decision {
+        var updated = answers
+        updated[head] = answer
+        return Decision(answers: updated)
+    }
 }
 
 public struct CommandContext: Encodable {
@@ -275,7 +281,72 @@ public enum LayaClient {
     }
 
     public static func cycle(state: CycleState, operations: [String: String], heads: [String: [String: String]]) async throws -> Decision {
-        try await post(cycleBody(state: state, operations: operations, heads: heads))
+        // Keep the operation and all short speculative heads in one forward pass. Long target
+        // heads are evaluated in small batches after the operation is known; otherwise Laya's
+        // fixed option budget would reduce a large page to a handful of truncated labels.
+        let shortHeads = heads.filter { $0.value.count <= actionsPerQuestion }
+        var decision = try await post(cycleBody(state: state, operations: operations, heads: shortHeads))
+        guard let operation = decision.choice("operation")?.id else { throw DecisionError.invalidResponse }
+
+        var relevant: [String] = []
+        let operationHeads = [
+            "CLICK": "click_target", "TYPE_TEXT": "type_target", "OPEN_APP": "app_target",
+            "OPEN_URL": "url_target", "OPEN_FOLDER": "folder_target", "MENU": "menu_target",
+            "QUIT_APP": "quit_target", "ARRANGE_WINDOWS": "arrange_target"
+        ]
+        if let head = operationHeads[operation] { relevant.append(head) }
+        if operation == "TYPE_TEXT" { relevant += ["type_from", "type_to"] }
+
+        for head in relevant where heads[head].map({ $0.count > actionsPerQuestion }) == true {
+            let answer = try await chooseLargeCycleHead(state: state, operations: operations, head: head, options: heads[head]!)
+            decision = decision.withAnswer(answer, for: head)
+        }
+
+        // If the intended input was absent, the desktop loop may substitute a click. Make that
+        // fallback available even when the click list was one of the large heads.
+        if operation == "TYPE_TEXT", decision.answers["type_target"]?.choice == "none",
+           heads["click_target"].map({ $0.count > actionsPerQuestion }) == true {
+            let answer = try await chooseLargeCycleHead(state: state, operations: operations, head: "click_target", options: heads["click_target"]!)
+            decision = decision.withAnswer(answer, for: "click_target")
+        }
+        return decision
+    }
+
+    private static func chooseLargeCycleHead(state: CycleState, operations: [String: String], head: String,
+                                             options: [String: String]) async throws -> Decision.Answer {
+        let special = options.filter { $0.key == "none" }
+        let actual = options.filter { $0.key != "none" }
+        guard !actual.isEmpty else { throw DecisionError.invalidResponse }
+        var winners: [String] = []
+        var winnerAnswers: [Decision.Answer] = []
+        var noMatch: Decision.Answer?
+
+        for lower in stride(from: 0, to: actual.count, by: actionsPerQuestion) {
+            let upper = min(lower + actionsPerQuestion, actual.count)
+            var batch = Dictionary(uniqueKeysWithValues: actual[lower..<upper].map { ($0.key, $0.value) })
+            for item in special { batch[item.key] = item.value }
+            let response = try await post(cycleBody(state: state, operations: operations, heads: [head: batch]))
+            guard let answer = response.answers[head], answer.type == "choice" else { throw DecisionError.invalidResponse }
+            if answer.choice == "none" { noMatch = answer }
+            else if let choice = answer.choice, options[choice] != nil {
+                winners.append(choice)
+                winnerAnswers.append(answer)
+            } else {
+                throw DecisionError.invalidResponse
+            }
+        }
+
+        guard !winners.isEmpty else {
+            guard let noMatch else { throw DecisionError.invalidResponse }
+            return noMatch
+        }
+        if winners.count == 1 { return winnerAnswers[0] }
+
+        var finalOptions = Dictionary(uniqueKeysWithValues: winners.map { ($0, options[$0]!) })
+        for item in special { finalOptions[item.key] = item.value }
+        let final = try await post(cycleBody(state: state, operations: operations, heads: [head: finalOptions]))
+        guard let answer = final.answers[head], answer.type == "choice" else { throw DecisionError.invalidResponse }
+        return answer
     }
 
     /// Keep-alive so the first request of a command does not pay for a new connection.
