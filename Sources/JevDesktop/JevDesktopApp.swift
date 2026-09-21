@@ -279,7 +279,7 @@ final class AppModel: ObservableObject {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         cancel(showStatus: false)
-        // Coverage audit of the window in front; reads only and never calls Jev, so it needs Accessibility but not the API key.
+        // Coverage audit of the window in front; reads only and never calls Laya.
         let debugHooks = UserDefaults.standard.bool(forKey: "DebugHooks")
         if debugHooks, text == "/probe" {
             guard Desktop.hasAccess, let app = Desktop.currentTarget(fallback: lastExternalApp) else { fail("The probe needs Accessibility access and an app in front."); return }
@@ -287,7 +287,7 @@ final class AppModel: ObservableObject {
             Task { headline = await Desktop.probe(application: app) }
             return
         }
-        // Test hook for the target parser and its verbs, without Jev: `/act 14` performs target [14] of the window in front.
+        // Test hook for the target parser and its verbs, without Laya: `/act 14` performs target [14] of the window in front.
         if debugHooks, text.hasPrefix("/act "), let wanted = Int(text.dropFirst(5).trimmingCharacters(in: .whitespaces)) {
             guard Desktop.hasAccess, let app = Desktop.currentTarget(fallback: lastExternalApp) else { fail("/act needs Accessibility access and an app in front."); return }
             Task {
@@ -387,7 +387,7 @@ final class AppModel: ObservableObject {
                 detail = steps.count > 1 ? "Done: \(steps.count) steps. Hold ⌃⌥Space to speak again." : "Hold ⌃⌥Space to speak again. Escape closes."
                 timing = String(format: "%.2fs total · %.2fs plan · %.2fs decision · %d action%@", Date().timeIntervalSince(started), planSeconds, modelSeconds, actions, actions == 1 ? "" : "s")
                 } else {
-                    // Default: one Jev request per cycle, jev-ultrafast style. Code owns sequencing; Jev picks operation and target.
+                    // Default: one Laya request per cycle. Code owns sequencing; Laya picks operation and target.
                     let outcome = try await runCycles(command, app: first, generation: current, modelSeconds: &modelSeconds)
                     guard generation == current else { return }
                     if case .completed(let result, let count) = outcome {
@@ -408,7 +408,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Execute one planned step: deterministic kinds run in code; on-screen kinds are grounded by one narrow Jev question.
+    /// Execute one planned step: deterministic kinds run in code; on-screen kinds are grounded by one narrow Laya question.
     private func executePlanned(_ step: PlanStep, goal: String, app first: NSRunningApplication, cached: DesktopSnapshot?, label: String,
                                 generation current: UUID, modelSeconds: inout Double) async throws -> StepOutcome {
         func name(_ app: NSRunningApplication) -> String { app.localizedName ?? "the app" }
@@ -539,13 +539,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// jev-ultrafast style loop: every cycle sends the current element table, the goal, the dictation and recent actions,
-    /// and asks Jev for one operation plus speculative targets in a single request. Code executes and checks freshness.
+    /// Every cycle sends the current element table, the goal, the dictation and recent actions,
+    /// and asks Laya for one operation plus speculative targets in a single request. Code executes and checks freshness.
     private func runCycles(_ goal: String, app first: NSRunningApplication, generation current: UUID, modelSeconds: inout Double) async throws -> StepOutcome {
         func name(_ app: NSRunningApplication) -> String { app.localizedName ?? "the app" }
         var app = first
         let input = CommandInput(goal)
-        // The text to type is chosen by Jev as a first and a last word of the sentence (select, do not generate). The regex
+        // The text to type is chosen by Laya as a first and a last word of the sentence (select, do not generate). The regex
         // splitter only understood "type this: X" and typed "teal into the colour field" for "Type teal into the colour field".
         let dictation: String? = nil
         var recent: [LayaClient.RecentAction] = []
@@ -555,7 +555,7 @@ final class AppModel: ObservableObject {
         var lastPick = ""
         var samePick = 0
         let noEffect = "no visible effect"
-        // A stated count is arithmetic: Jev says which step it belongs to, code repeats that step exactly.
+        // A stated count is arithmetic: Laya says which step it belongs to, code repeats that step exactly.
         var count = input.count
         var lastOffered = Set<String>()
         var lastClicked = Set<String>()
@@ -564,8 +564,8 @@ final class AppModel: ObservableObject {
         var windowChanged = false
         let previous = awaitingClarification ? priorAction : nil
         let words = Set(goal.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count >= 3 })
-        // A chain: the steps that worked in this window, kept as descriptions of their targets. When Jev judges that the goal
-        // wants them in every window, code repeats them in the other windows without asking Jev again.
+        // A chain: the steps that worked in this window, kept as descriptions of their targets. When Laya judges that the goal
+        // wants them in every window, code repeats them in the other windows without asking Laya again.
         var chain: [ChainStep] = []
         var chainWindow: AXUIElement?
         var everyWindow = 0.0
@@ -641,7 +641,7 @@ final class AppModel: ObservableObject {
             let beside = allClicks.filter { snapshot.meta[$0.id]?.place == nil }
             let clicks = (aboutToolbar || pageClicks.isEmpty) ? allClicks : pageClicks + beside
             let inputs = snapshot.candidates(of: [.focus])
-            // One list feeds the element table and the click head; with the inputs it stays under TypeSafe's 255-option limit.
+            // One list feeds the element table and the click head; Laya's client batches long option lists.
             func trimmed(_ list: [Candidate], limit: Int = 250) -> [Candidate] {
                 guard list.count > limit else { return list }
                 let relevant = list.filter { candidate in words.contains { candidate.label.lowercased().contains($0) } }
@@ -661,7 +661,7 @@ final class AppModel: ObservableObject {
             let tokens = goal.split(separator: " ").map(String.init)
             if !inputs.isEmpty {
                 heads["type_target"] = Dictionary(uniqueKeysWithValues: inputs.map { ($0.id, option($0)) })
-                // The wanted input may not be on screen yet (a narrow page keeps its search box behind a button). Jev can say so.
+                // The wanted input may not be on screen yet (a narrow page keeps its search box behind a button). Laya can say so.
                 heads["type_target"]?["none"] = "None of the offered inputs is the one the goal means: for example the goal means the search box or a field of the site in the page, the page does not show it yet, and only the app's own address bar is offered. The right input still has to be opened or revealed by a click or a menu item."
                 operations["TYPE_TEXT"] = dictation.map { "Enter the dictated text '\($0)' into the input chosen in type_target, at its cursor; does not submit." }
                     ?? "Enter into the input chosen in type_target the text that runs from the word chosen in type_from to the word chosen in type_to; does not submit. When the input the goal means is not among the offered inputs (a narrow page hides its search box behind a Search button), CLICK the control that reveals it instead of typing into a different input."
@@ -714,7 +714,7 @@ final class AppModel: ObservableObject {
             modelSeconds += Date().timeIntervalSince(began)
             try Task.checkCancellation()
             guard generation == current, var op = decision.choice("operation") else { throw DecisionError.invalidResponse }
-            // Dictated text pulls Jev toward typing at once. When Jev itself judges that the sentence first creates something new
+            // Dictated text pulls Laya toward typing at once. When Laya itself judges that the sentence first creates something new
             // (a new note) and that has not happened, take its better one of MENU and CLICK, the operations that create things.
             // `finishes` was judged for typing, so it is not used after a substitution.
             var substituted = false
@@ -796,7 +796,7 @@ final class AppModel: ObservableObject {
             }
 
             let pick = "\(op.id)|\(targetCandidate?.id ?? "")"
-            // Arranging is idempotent and was read back as done. Jev cannot see window positions, so it may ask for the same
+            // Arranging is idempotent and was read back as done. Laya cannot see window positions, so it may ask for the same
             // arrangement again; asking again for what verifiably just happened means the goal is met, not that it failed.
             if op.id == "ARRANGE_WINDOWS", pick == lastPick, lastResult.hasPrefix("Arranged") || lastResult.contains("moved to its new place") {
                 return try await finish()
@@ -920,7 +920,7 @@ final class AppModel: ObservableObject {
                                        text: typed, action: targetCandidate.flatMap { snapshot.actions[$0.id] }, effective: changed))
                 chainWindow = Desktop.windows(of: app).first
             }
-            // Jev judged, in the same request, that this operation completes the goal; when the action visibly worked, a further
+            // Laya judged, in the same request, that this operation completes the goal; when the action visibly worked, a further
             // cycle only to hear DONE is time a person would not spend.
             let worked = after.title != titleBefore || result.hasPrefix("Typed into") || result.hasPrefix("Opened") || result.contains("the content moved") || result.hasPrefix("Arranged") || arranged
             if decision.noul("finishes") >= 0.8, worked, count == nil, !substituted {
@@ -946,7 +946,7 @@ final class AppModel: ObservableObject {
         var effective: Bool
     }
 
-    /// Repeat a recorded chain in every other window of the app, without Jev. It goes step by step across the windows, so the
+    /// Repeat a recorded chain in every other window of the app, without Laya. It goes step by step across the windows, so the
     /// pages of all windows load at the same time. A target is found by its name, or else by its kind, place and order; a target
     /// that is not there yet is waited for (at most about 5 s), and a window where it never appears is reported, not guessed.
     private func replay(_ chain: [ChainStep], in app: NSRunningApplication, except recorded: AXUIElement?, generation current: UUID) async throws -> String {
@@ -1024,7 +1024,7 @@ final class AppModel: ObservableObject {
             .joined(separator: " ")
     }
 
-    /// Fallback loop: run one command through capture → Jev → execute until Jev reports it complete.
+    /// Fallback loop: run one command through capture → Laya → execute until Laya reports it complete.
     private func execute(_ command: String, dictation: String?, goal: String?, app first: NSRunningApplication, label: String,
                          generation current: UUID, modelSeconds: inout Double) async throws -> StepOutcome {
         func name(_ app: NSRunningApplication) -> String { app.localizedName ?? "the app" }

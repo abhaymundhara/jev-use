@@ -247,7 +247,7 @@ public enum LayaClient {
             criteria: ["true": "Only one step of the goal remains and it is the one performed now, such as opening the one requested app, folder or site, the one requested click, or entering the text when nothing follows it.",
                        "false": "The goal needs further steps after this one, such as typing after opening, pressing Return after typing, picking a result after searching."])
         if heads["type_from"] != nil {
-            // Narrow on purpose: asked about "every earlier step", Jev also counted an app that was already in front as not dealt with.
+            // Narrow on purpose: an app that is already in front is not evidence that a requested new item was created.
             questions["create_first"] = Question(
                 type: "noul",
                 instructions: "Does `goal` ask to create something new (a new note, tab, document, file or window) BEFORE entering its text, and is that creation still missing from `recentActions`?",

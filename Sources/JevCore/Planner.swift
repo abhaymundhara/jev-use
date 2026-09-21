@@ -1,6 +1,6 @@
 import Foundation
 
-/// One planned step in a closed vocabulary. Code executes the deterministic kinds; Jev grounds the on-screen ones.
+/// One planned step in a closed vocabulary. Code executes the deterministic kinds; Laya grounds the on-screen ones.
 public struct PlanStep: Codable, Equatable {
     public enum Kind: String, Codable, CaseIterable {
         case openApp = "open_app", openURL = "open_url", openFolder = "open_folder", click, focusInput = "focus_input",
@@ -20,7 +20,7 @@ public struct PlanStep: Codable, Equatable {
         self.kind = kind; self.target = target; self.text = text; self.ordinal = ordinal; self.amount = amount
     }
 
-    /// Short description shown in the widget and given to Jev as the step.
+    /// Short description shown in the widget and given to Laya as the step.
     public var summary: String {
         switch kind {
         case .openApp: return "Open \(target ?? "app")"
@@ -38,7 +38,7 @@ public struct PlanStep: Codable, Equatable {
     }
 }
 
-/// Turns one spoken utterance into ordered steps with an LLM through OpenRouter. Jev still selects every on-screen target.
+/// Turns one spoken utterance into ordered steps with an LLM through OpenRouter. Laya still selects every on-screen target.
 public enum Planner {
     public static let defaultModel = "inception/mercury-2.5"
     /// Overridable for benchmarking: `defaults write local.jev-use PlannerModel <openrouter model id>`.
