@@ -163,7 +163,7 @@ final class AppModel: ObservableObject {
                 isLoadingLaya = false
                 layaReady = false
                 headline = "Laya is unavailable"
-                detail = "Start the local Laya server at 127.0.0.1:8770, then refresh. (error.localizedDescription)"
+                detail = "Start the local Laya server at 127.0.0.1:8770, then refresh. \(error.localizedDescription)"
                 showSettings()
             }
         }
