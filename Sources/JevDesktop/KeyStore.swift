@@ -2,7 +2,6 @@ import Foundation
 import Security
 
 enum KeyStore {
-    static let typeSafe = "typesafe-api-key"
     static let planner = "openrouter-api-key"
 
     private static func query(_ account: String) -> [String: Any] {
@@ -11,7 +10,7 @@ enum KeyStore {
          kSecAttrAccount as String: account]
     }
 
-    static func read(_ account: String = typeSafe) throws -> String? {
+    static func read(_ account: String = planner) throws -> String? {
         var request = query(account)
         request[kSecReturnData as String] = true
         request[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -23,7 +22,7 @@ enum KeyStore {
         return key
     }
 
-    static func save(_ key: String, account: String = typeSafe) throws {
+    static func save(_ key: String, account: String = planner) throws {
         let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { throw DesktopError(message: "Enter an API key.") }
         let attributes = [kSecValueData as String: Data(key.utf8)]

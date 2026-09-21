@@ -77,16 +77,17 @@ public struct CommandContext: Encodable {
     }
 }
 
-public enum JevClient {
-    // TypeSafe returned HTTP 400 above 255 choices. Reserve four for non-action outcomes.
-    private static let actionsPerQuestion = 255 - 4
+public enum LayaClient {
+    // Laya is most reliable with short option lists. Reserve four slots for non-action outcomes.
+    private static let actionsPerQuestion = 16
+    private static let endpoint = URL(string: "http://127.0.0.1:8770/api/predict")!
+    private static let healthEndpoint = URL(string: "http://127.0.0.1:8770/api/health")!
     private struct Question: Encodable {
         let type: String
         let instructions: String
         let criteria: [String: String]
     }
     private struct Request: Encodable {
-        let model = "jev-latest"
         let state: CommandContext
         let questions: [String: Question]
     }
@@ -140,10 +141,10 @@ public enum JevClient {
         return try JSONEncoder().encode(Request(state: context, questions: questions))
     }
 
-    public static func decide(context: CommandContext, candidates: [Candidate], apiKey: String) async throws -> Decision {
+    public static func decide(context: CommandContext, candidates: [Candidate]) async throws -> Decision {
         var remaining = candidates
         while true {
-            let response = try await evaluate(context: context, candidates: remaining, apiKey: apiKey)
+            let response = try await evaluate(context: context, candidates: remaining)
             guard remaining.count > actionsPerQuestion else { return response }
             func single(_ answer: Decision.Answer) -> Decision {
                 Decision(answers: ["action": answer, "more": response.answers["more"]].compactMapValues { $0 })
@@ -173,24 +174,8 @@ public enum JevClient {
         }
     }
 
-    private static func evaluate(context: CommandContext, candidates: [Candidate], apiKey: String) async throws -> Decision {
-        var request = URLRequest(url: URL(string: "https://api.typesafe.ai/v1/systemone")!)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try requestBody(context: context, candidates: candidates)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try Task.checkCancellation()
-        guard let response = response as? HTTPURLResponse else { throw DecisionError.invalidResponse }
-        guard (200...299).contains(response.statusCode) else {
-            let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-            let error = object?["error"] as? [String: Any]
-            let validation = (object?["detail"] as? [[String: Any]])?.compactMap { $0["msg"] as? String }.joined(separator: "; ")
-            let raw = String(decoding: data.prefix(400), as: UTF8.self)
-            let message = error?["message"] as? String ?? object?["message"] as? String ?? object?["detail"] as? String ?? object?["error"] as? String ?? validation ?? raw
-            throw ServiceError(status: response.statusCode, message: message.replacingOccurrences(of: apiKey, with: "[redacted]"))
-        }
-        return try JSONDecoder().decode(Decision.self, from: data)
+    private static func evaluate(context: CommandContext, candidates: [Candidate]) async throws -> Decision {
+        try await post(requestBody(context: context, candidates: candidates))
     }
 
     // MARK: - One request per cycle: operation head plus speculative target heads
@@ -238,7 +223,7 @@ public enum JevClient {
 
     /// Build the cycle request. `operations` maps operation id to description; `heads` maps a target head to its options (id → description).
     static func cycleBody(state: CycleState, operations: [String: String], heads: [String: [String: String]]) throws -> Data {
-        struct Request: Encodable { let model = "jev-latest"; let state: CycleState; let questions: [String: Question] }
+        struct Request: Encodable { let state: CycleState; let questions: [String: Question] }
         var questions: [String: Question] = [
             "operation": Question(type: "choice", instructions: cycleRules + "\nWhich operation should run now?", criteria: operations)
         ]
@@ -286,23 +271,11 @@ public enum JevClient {
         return try JSONEncoder().encode(Request(state: state, questions: questions))
     }
 
-    public static func cycle(state: CycleState, operations: [String: String], heads: [String: [String: String]], apiKey: String) async throws -> Decision {
-        var request = URLRequest(url: URL(string: "https://api.typesafe.ai/v1/systemone")!)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try cycleBody(state: state, operations: operations, heads: heads)
-        let (data, response) = try await session.data(for: request)
-        try Task.checkCancellation()
-        guard let http = response as? HTTPURLResponse else { throw DecisionError.invalidResponse }
-        guard (200...299).contains(http.statusCode) else {
-            let raw = String(decoding: data.prefix(400), as: UTF8.self)
-            throw ServiceError(status: http.statusCode, message: raw.replacingOccurrences(of: apiKey, with: "[redacted]"))
-        }
-        return try JSONDecoder().decode(Decision.self, from: data)
+    public static func cycle(state: CycleState, operations: [String: String], heads: [String: [String: String]]) async throws -> Decision {
+        try await post(cycleBody(state: state, operations: operations, heads: heads))
     }
 
-    /// Keep-alive so the first request of a command does not pay for a new TLS connection.
+    /// Keep-alive so the first request of a command does not pay for a new connection.
     static let session: URLSession = {
         let config = URLSessionConfiguration.default
         config.httpMaximumConnectionsPerHost = 2
@@ -311,9 +284,63 @@ public enum JevClient {
     }()
 
     public static func warmUp() {
-        var request = URLRequest(url: URL(string: "https://api.typesafe.ai/v1/systemone")!)
-        request.httpMethod = "HEAD"
+        var request = URLRequest(url: healthEndpoint)
+        request.httpMethod = "GET"
         session.dataTask(with: request).resume()
+    }
+
+    public struct Health: Decodable {
+        public let models: [String: String]
+        public let version: String
+        public let torch: String
+        public let device: String
+
+        public var isReady: Bool { !models.isEmpty && models.values.allSatisfy { $0 == "ready" } }
+    }
+
+    public static func health() async throws -> Health {
+        var request = URLRequest(url: healthEndpoint)
+        request.httpMethod = "GET"
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch let error as URLError {
+            if Task.isCancelled { throw CancellationError() }
+            throw ServiceError(status: nil, message: error.localizedDescription)
+        }
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse else { throw DecisionError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            throw ServiceError(status: http.statusCode, message: responseMessage(from: data))
+        }
+        return try JSONDecoder().decode(Health.self, from: data)
+    }
+
+    private static func post(_ body: Data) async throws -> Decision {
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch let error as URLError {
+            if Task.isCancelled { throw CancellationError() }
+            throw ServiceError(status: nil, message: error.localizedDescription)
+        }
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse else { throw DecisionError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            throw ServiceError(status: http.statusCode, message: responseMessage(from: data))
+        }
+        return try JSONDecoder().decode(Decision.self, from: data)
+    }
+
+    private static func responseMessage(from data: Data) -> String {
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        return object?["error"] as? String
+            ?? object?["message"] as? String
+            ?? String(decoding: data.prefix(400), as: UTF8.self)
     }
 
     /// One narrow grounding judgment for a planned step: which listed target is the one the step means.
@@ -328,7 +355,7 @@ public enum JevClient {
     }
 
     static func groundingBody(context: GroundingContext, candidates: [Candidate]) throws -> Data {
-        struct Request: Encodable { let model = "jev-latest"; let state: GroundingContext; let questions: [String: Question] }
+        struct Request: Encodable { let state: GroundingContext; let questions: [String: Question] }
         let noun: String
         switch context.step.kind {
         case .openApp, .quitApp: noun = "application"
@@ -354,32 +381,19 @@ public enum JevClient {
         return try JSONEncoder().encode(Request(state: context, questions: questions))
     }
 
-    public static func ground(context: GroundingContext, candidates: [Candidate], apiKey: String) async throws -> Decision {
-        var request = URLRequest(url: URL(string: "https://api.typesafe.ai/v1/systemone")!)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try groundingBody(context: context, candidates: candidates)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try Task.checkCancellation()
-        guard let http = response as? HTTPURLResponse else { throw DecisionError.invalidResponse }
-        guard (200...299).contains(http.statusCode) else {
-            let raw = String(decoding: data.prefix(400), as: UTF8.self)
-            throw ServiceError(status: http.statusCode, message: raw.replacingOccurrences(of: apiKey, with: "[redacted]"))
-        }
-        return try JSONDecoder().decode(Decision.self, from: data)
+    public static func ground(context: GroundingContext, candidates: [Candidate]) async throws -> Decision {
+        try await post(groundingBody(context: context, candidates: candidates))
     }
 
     private struct ServiceError: LocalizedError {
-        let status: Int
+        let status: Int?
         let message: String?
         var errorDescription: String? {
             switch status {
-            case 401: return "TypeSafe rejected the API key. Check it in Settings."
-            case 403: return "This TypeSafe key does not have access to the selected model."
-            case 429: return "TypeSafe's rate limit was reached. Try again shortly."
-            case 529: return "TypeSafe is currently overloaded. Try again shortly."
-            default: return "TypeSafe returned HTTP \(status). \(message ?? "Nothing was executed.")"
+            case 400: return "Laya rejected the decision request. \(message ?? "Check the supplied questions.")"
+            case 500: return "Laya failed while making the decision. \(message ?? "Nothing was executed.")"
+            case .some(let status): return "Laya returned HTTP \(status). \(message ?? "Nothing was executed.")"
+            case .none: return "Local Laya is unavailable. Start the Laya server at 127.0.0.1:8770 and try again."
             }
         }
     }

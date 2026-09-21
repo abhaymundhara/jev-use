@@ -44,8 +44,8 @@ final class AppModel: ObservableObject {
     @Published var word: String?
     @Published var transcript = ""
     @Published var isBusy = false
-    @Published var hasKey = false
-    @Published var isLoadingKey = true
+    @Published var layaReady = false
+    @Published var isLoadingLaya = true
     @Published var accessibilityAllowed = Desktop.hasAccess
     @Published var speechAllowed = false
     @Published var targetName = "your current app"
@@ -54,12 +54,11 @@ final class AppModel: ObservableObject {
     let speech = SpeechInput()
     let systemAudio = SystemAudioMonitor()
     private let hotKey = HotKey()
-    private var key: String?
-    /// Optional OpenRouter key: when present, the planner model turns the sentence into steps and Jev grounds each one.
+    /// Optional OpenRouter key: when present, the planner model turns the sentence into steps and Laya grounds each one.
     private var plannerKey: String?
     @Published var hasPlannerKey = false
     private var task: Task<Void, Never>?
-    private var keyTask: Task<Void, Never>?
+    private var serviceTask: Task<Void, Never>?
     /// Guards against a runaway chain in the fallback loop; Escape still cancels earlier.
     private let maxSteps = 12
     private var generation = UUID()
@@ -81,7 +80,7 @@ final class AppModel: ObservableObject {
     private var overlay: NSPanel?
     private var shortcutReady = false
 
-    var setupComplete: Bool { hasKey && accessibilityAllowed && speechAllowed }
+    var setupComplete: Bool { layaReady && accessibilityAllowed && speechAllowed }
 
     func start() {
         lastExternalApp = NSWorkspace.shared.frontmostApplication.flatMap { Desktop.isControllable($0) ? $0 : nil }
@@ -141,30 +140,30 @@ final class AppModel: ObservableObject {
             detail = error.localizedDescription
         }
         if shortcutReady {
-            headline = "Waiting for Keychain…"
-            detail = "Approve the saved-key prompt on your Mac if it appears."
+            headline = "Checking local Laya…"
+            detail = "Connecting to the Laya server on this Mac."
         }
         showOverlay()
-        keyTask = Task {
+        serviceTask = Task {
             do {
-                let saved = try await Task.detached(priority: .userInitiated) { try KeyStore.read() }.value
                 let planner = try await Task.detached(priority: .userInitiated) { try KeyStore.read(KeyStore.planner) }.value
+                let health = try await LayaClient.health()
                 guard !Task.isCancelled else { return }
-                key = saved
-                hasKey = saved != nil
                 plannerKey = planner
                 hasPlannerKey = planner != nil
-                isLoadingKey = false
+                layaReady = health.isReady
+                isLoadingLaya = false
                 if shortcutReady {
-                    headline = hasKey ? "Finish setup" : "Add your TypeSafe key"
-                    detail = "Complete setup, then hold ⌃⌥Space to speak."
+                    headline = layaReady ? "Finish setup" : "Laya is still loading"
+                    detail = layaReady ? "Complete setup, then hold ⌃⌥Space to speak." : "Wait for Laya's checkpoints to finish loading, then refresh."
                 }
                 openMainInterface()
             } catch {
                 guard !Task.isCancelled else { return }
-                isLoadingKey = false
-                headline = "Keychain needs attention"
-                detail = error.localizedDescription
+                isLoadingLaya = false
+                layaReady = false
+                headline = "Laya is unavailable"
+                detail = "Start the local Laya server at 127.0.0.1:8770, then refresh. (error.localizedDescription)"
                 showSettings()
             }
         }
@@ -176,24 +175,38 @@ final class AppModel: ObservableObject {
         else { showSettings() }
     }
 
-    func saveKey(_ value: String) {
-        do {
-            try KeyStore.save(value)
-            key = try KeyStore.read()
-            hasKey = key != nil
-            headline = "Key saved"
-            detail = "Stored in your Mac's Keychain. Try a command to check access."
-        } catch { fail(error.localizedDescription) }
-    }
-
     func savePlannerKey(_ value: String) {
         do {
             try KeyStore.save(value, account: KeyStore.planner)
             plannerKey = try KeyStore.read(KeyStore.planner)
             hasPlannerKey = plannerKey != nil
             headline = "Planner key saved"
-            detail = "\(Planner.model) will plan multi-step commands; Jev still chooses every action."
+            detail = "\(Planner.model) will plan multi-step commands; Laya still chooses every action locally."
         } catch { fail(error.localizedDescription) }
+    }
+
+    func refreshLaya() {
+        isLoadingLaya = true
+        layaReady = false
+        serviceTask?.cancel()
+        serviceTask = Task {
+            do {
+                let health = try await LayaClient.health()
+                guard !Task.isCancelled else { return }
+                layaReady = health.isReady
+                isLoadingLaya = false
+                headline = layaReady ? "Laya is ready" : "Laya is still loading"
+                detail = layaReady ? "Hold ⌃⌥Space to speak." : "Wait for Laya's checkpoints to finish loading, then refresh."
+                openMainInterface()
+            } catch {
+                guard !Task.isCancelled else { return }
+                isLoadingLaya = false
+                layaReady = false
+                headline = "Laya is unavailable"
+                detail = "Start the local Laya server at 127.0.0.1:8770, then refresh."
+                showSettings()
+            }
+        }
     }
 
     func grantAccessibility() {
@@ -217,8 +230,8 @@ final class AppModel: ObservableObject {
 
     private func prepare() -> NSRunningApplication? {
         refreshPermissions()
-        guard !isLoadingKey else { fail("Approve Desktop Voice's saved-key prompt in Keychain, then try again."); return nil }
-        guard hasKey else { fail("Add your TypeSafe API key in Settings."); showSettings(); return nil }
+        guard !isLoadingLaya else { fail("Waiting for local Laya to become ready, then try again."); return nil }
+        guard layaReady else { fail("Start the local Laya server at 127.0.0.1:8770, then refresh."); showSettings(); return nil }
         guard accessibilityAllowed else {
             fail("macOS has not recognised this app's Accessibility grant. If Desktop Voice is already enabled, remove its old entry and add the current app again.")
             showSettings()
@@ -238,7 +251,7 @@ final class AppModel: ObservableObject {
         isBusy = true
         // Warm the connection, and ask a Chromium or Electron app for its web content, while the user is still speaking.
         // The result is not reused: a capture without the sentence lacks the apps and addresses the sentence names.
-        JevClient.warmUp()
+            LayaClient.warmUp()
         Task { _ = try? await Desktop.capture(application: app, command: "", includeMenus: false) }
         transcript = ""
         timing = ""
@@ -290,7 +303,7 @@ final class AppModel: ObservableObject {
         }
         guard let app = prepare() else { return }
         settingsWindow?.orderOut(nil)
-        JevClient.warmUp()
+        LayaClient.warmUp()
         run(text, in: app, started: Date())
         spell(text)
     }
@@ -444,7 +457,7 @@ final class AppModel: ObservableObject {
         var snapshot = step.kind == .menu ? nil : cached
         while true {
             try Task.checkCancellation()
-            guard generation == current, let key else { return .stopped }
+            guard generation == current else { return .stopped }
             if snapshot == nil {
                 headline = "\(label)Reading \(name(app))…"
                 snapshot = try await Desktop.capture(application: app, command: command, dictation: step.kind == .typeText ? step.text : nil, includeMenus: step.kind == .menu)
@@ -473,9 +486,9 @@ final class AppModel: ObservableObject {
                 return .stopped
             }
             headline = "\(label)Choosing…"
-            let context = JevClient.GroundingContext(step: step, goal: goal, application: name(app), window: current_.windowTitle)
+            let context = LayaClient.GroundingContext(step: step, goal: goal, application: name(app), window: current_.windowTitle)
             let began = Date()
-            let decision = try await JevClient.ground(context: context, candidates: candidates, apiKey: key)
+            let decision = try await LayaClient.ground(context: context, candidates: candidates)
             modelSeconds += Date().timeIntervalSince(began)
             try Task.checkCancellation()
             guard generation == current else { return .stopped }
@@ -535,7 +548,7 @@ final class AppModel: ObservableObject {
         // The text to type is chosen by Jev as a first and a last word of the sentence (select, do not generate). The regex
         // splitter only understood "type this: X" and typed "teal into the colour field" for "Type teal into the colour field".
         let dictation: String? = nil
-        var recent: [JevClient.RecentAction] = []
+        var recent: [LayaClient.RecentAction] = []
         var noChange = 0
         var lastResult = "Done"
         var ineffective = Set<String>()
@@ -573,7 +586,7 @@ final class AppModel: ObservableObject {
         }
         for cycle in 1...14 {
             try Task.checkCancellation()
-            guard generation == current, let key else { return .stopped }
+            guard generation == current else { return .stopped }
             headline = cycle == 1 ? "Reading \(name(app))…" : "Looking again…"
             // The command's app may have quit (it was asked to, or the user closed it); continue with the app now in front.
             if app.isTerminated { app = Desktop.currentTarget(fallback: lastExternalApp) ?? app }
@@ -607,7 +620,7 @@ final class AppModel: ObservableObject {
             // authority: when the offered controls differ from the last cycle's, the last action did change the screen.
             let offered = offeredIDs(snapshot)
             if let last = recent.last, last.result.hasSuffix(noEffect), offered != lastOffered {
-                recent[recent.count - 1] = JevClient.RecentAction(action: last.action, result: last.result.replacingOccurrences(of: noEffect, with: "the window's content changed"), screenChanged: false)
+                recent[recent.count - 1] = LayaClient.RecentAction(action: last.action, result: last.result.replacingOccurrences(of: noEffect, with: "the window's content changed"), screenChanged: false)
                 noChange = 0
                 ineffective.subtract(lastClicked)
                 if !chain.isEmpty { chain[chain.count - 1].effective = true }
@@ -615,7 +628,7 @@ final class AppModel: ObservableObject {
             lastOffered = offered
 
             // Element table: on-screen controls and inputs, numbered in screen order, with current values.
-            var elements: [JevClient.Element] = []
+            var elements: [LayaClient.Element] = []
             var heads: [String: [String: String]] = [:]
             var operations: [String: String] = [:]
             func option(_ candidate: Candidate) -> String { candidate.detail }
@@ -639,7 +652,7 @@ final class AppModel: ObservableObject {
             for candidate in offeredClicks + inputs {
                 guard let meta = snapshot.meta[candidate.id] else { continue }
                 let ops = snapshot.kinds[candidate.id] == .focus ? ["TYPE_TEXT", "CLICK"] : ["CLICK"]
-                elements.append(JevClient.Element(index: meta.index, role: meta.role, label: candidate.label, value: meta.value, place: meta.place, operations: ops))
+                elements.append(LayaClient.Element(index: meta.index, role: meta.role, label: candidate.label, value: meta.value, place: meta.place, operations: ops))
             }
             if !clicks.isEmpty {
                 heads["click_target"] = Dictionary(uniqueKeysWithValues: (offeredClicks + inputs).map { ($0.id, option($0)) })
@@ -688,16 +701,16 @@ final class AppModel: ObservableObject {
             operations["DONE"] = "Every part of the goal is visibly satisfied."
             operations["BLOCKED"] = "No offered operation can make progress on the goal."
 
-            let available = JevClient.Available(apps: apps.map(\.label), folders: folders.map(\.label), sites: sites.map(\.label), menus: menus.map(\.label))
+            let available = LayaClient.Available(apps: apps.map(\.label), folders: folders.map(\.label), sites: sites.map(\.label), menus: menus.map(\.label))
             let windowCount = Desktop.windows(of: app).count
-            let state = JevClient.CycleState(goal: goal, dictation: dictation, application: name(app), window: snapshot.windowTitle,
+            let state = LayaClient.CycleState(goal: goal, dictation: dictation, application: name(app), window: snapshot.windowTitle,
                                              elements: elements, available: available, recentActions: Array(recent.suffix(10)), previous: previous, count: count,
                                              otherWindows: windowCount > 1 ? windowCount - 1 : nil)
             headline = cycle == 1 ? "Choosing…" : "Choosing again…"
             detail = "\(elements.count) controls in \(name(app))."
             let began = Date()
             log.notice("cycle \(cycle) offers: \(heads.map { "\($0.key) \($0.value.count)" }.sorted().joined(separator: ", "), privacy: .public)")
-            let decision = try await JevClient.cycle(state: state, operations: operations, heads: heads, apiKey: key)
+            let decision = try await LayaClient.cycle(state: state, operations: operations, heads: heads)
             modelSeconds += Date().timeIntervalSince(began)
             try Task.checkCancellation()
             guard generation == current, var op = decision.choice("operation") else { throw DecisionError.invalidResponse }
@@ -748,12 +761,12 @@ final class AppModel: ObservableObject {
                 return .stopped
             case "WAIT":
                 try await Task.sleep(nanoseconds: 400_000_000)
-                recent.append(JevClient.RecentAction(action: "WAIT", result: "waited 0.4s", screenChanged: false))
+                recent.append(LayaClient.RecentAction(action: "WAIT", result: "waited 0.4s", screenChanged: false))
                 continue
             default: break
             }
             if headName != nil && targetCandidate == nil {
-                recent.append(JevClient.RecentAction(action: op.id, result: "no target offered", screenChanged: false))
+                recent.append(LayaClient.RecentAction(action: op.id, result: "no target offered", screenChanged: false))
                 noChange += 1
                 if noChange >= 3 { headline = "Can't find it"; detail = "No target for \(op.id.lowercased()) in \(name(app))."; clearPixels(); isBusy = false; return .stopped }
                 continue
@@ -762,7 +775,7 @@ final class AppModel: ObservableObject {
             // more and two wrong ones (0.47 in a chat app, 0.35 on a playing video) were below; one wrong Return at 0.73 came from acting
             // on the user's app, which is fixed separately. An unsure Return is not pressed; that costs one cycle and does no harm.
             if op.id == "PRESS_RETURN", op.confidence < 0.5 {
-                recent.append(JevClient.RecentAction(action: "PRESS_RETURN", result: "NOT performed: not sure enough that the goal asks for Return here", screenChanged: false))
+                recent.append(LayaClient.RecentAction(action: "PRESS_RETURN", result: "NOT performed: not sure enough that the goal asks for Return here", screenChanged: false))
                 noChange += 1
                 if noChange >= 3 { headline = lastResult; detail = "Stopped: not sure what to do next."; clearPixels(); isBusy = false; return .stopped }
                 continue
@@ -847,7 +860,7 @@ final class AppModel: ObservableObject {
                     if repetitions > 1, ["SCROLL_DOWN", "SCROLL_UP", "SKIP_FORWARD", "SKIP_BACK"].contains(op.id) { count = nil }
                 }
             } catch let error as DesktopError where error.stale {
-                recent.append(JevClient.RecentAction(action: "\(op.id) \(label)", result: "NOT performed: the control changed before it could be used", screenChanged: false))
+                recent.append(LayaClient.RecentAction(action: "\(op.id) \(label)", result: "NOT performed: the control changed before it could be used", screenChanged: false))
                 continue
             }
             guard generation == current else { return .stopped }
@@ -890,7 +903,7 @@ final class AppModel: ObservableObject {
             if op.id == "CLICK", after.title == titleBefore, after.focused.contains(label) || !changed, let id = targetCandidate?.id { ineffective.insert(id); lastClicked = [id] }
             result += " → \(effect)"
             log.notice("cycle \(cycle) result: \(result, privacy: .public)")
-            recent.append(JevClient.RecentAction(action: "\(op.id) \(label)", result: result, screenChanged: after.title != titleBefore))
+            recent.append(LayaClient.RecentAction(action: "\(op.id) \(label)", result: result, screenChanged: after.title != titleBefore))
             lastResult = result
             priorCommand = goal
             priorAction = "\(op.id) \(label)"
@@ -1024,7 +1037,7 @@ final class AppModel: ObservableObject {
         let budget = goal == nil ? maxSteps : 4
         chain: while true {
             try Task.checkCancellation()
-            guard generation == current, let key else { return .stopped }
+            guard generation == current else { return .stopped }
             let number = steps.count + 1
             headline = "\(label)Reading \(name(app))…"
             detail = goal == nil ? "Finding the current controls." : command
@@ -1036,7 +1049,7 @@ final class AppModel: ObservableObject {
             let context = CommandContext(command: command, application: name(app), window: snapshot.windowTitle, completedSteps: steps,
                                          overallGoal: goal, previousCommand: priorCommand, previousAction: priorAction)
             let beganModel = Date()
-            let decision = try await JevClient.decide(context: context, candidates: snapshot.candidates, apiKey: key)
+            let decision = try await LayaClient.decide(context: context, candidates: snapshot.candidates)
             modelSeconds += Date().timeIntervalSince(beganModel)
             try Task.checkCancellation()
             guard generation == current, let answer = decision.answers["action"], answer.type == "choice" else { throw DecisionError.invalidResponse }
@@ -1216,7 +1229,7 @@ final class AppModel: ObservableObject {
 
     func shutdown() {
         cancel(showStatus: false)
-        keyTask?.cancel()
+        serviceTask?.cancel()
         systemAudio.stop()
         hotKey.unregister()
         if let appObserver { NSWorkspace.shared.notificationCenter.removeObserver(appObserver) }
@@ -1226,7 +1239,6 @@ final class AppModel: ObservableObject {
 
 private struct SettingsView: View {
     @ObservedObject var model: AppModel
-    @State private var key = ""
     @State private var plannerKey = ""
     @State private var command = ""
 
@@ -1240,20 +1252,19 @@ private struct SettingsView: View {
                 }
             }
             VStack(alignment: .leading, spacing: 8) {
-                Text("1. Connect TypeSafe").font(.headline)
                 HStack {
-                    SecureField(model.hasKey ? "Key saved — enter a replacement" : "TypeSafe API key", text: $key)
-                        .textFieldStyle(.roundedBorder).disabled(model.isLoadingKey)
-                    Button("Save key") { model.saveKey(key); if model.hasKey { key = "" } }.disabled(key.isEmpty || model.isLoadingKey)
+                    Text("1. Connect Laya").font(.headline)
+                    Spacer()
+                    Button("Refresh") { model.refreshLaya() }.disabled(model.isLoadingLaya)
                 }
-                Text("The key stays in Keychain. Commands, app controls and available folder names are sent to TypeSafe.")
+                Text(model.isLoadingLaya ? "Checking the local Laya server…" : model.layaReady ? "Laya is connected locally and all checkpoints are ready." : "Laya is not ready. Start it with the server from brainfunctioncollapse.com/laya, then refresh.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     SecureField(model.hasPlannerKey ? "OpenRouter key saved — enter a replacement" : "OpenRouter API key (optional: plans multi-step commands)", text: $plannerKey)
-                        .textFieldStyle(.roundedBorder).disabled(model.isLoadingKey)
-                    Button("Save key") { model.savePlannerKey(plannerKey); if model.hasPlannerKey { plannerKey = "" } }.disabled(plannerKey.isEmpty || model.isLoadingKey)
+                        .textFieldStyle(.roundedBorder).disabled(model.isLoadingLaya)
+                    Button("Save key") { model.savePlannerKey(plannerKey); if model.hasPlannerKey { plannerKey = "" } }.disabled(plannerKey.isEmpty || model.isLoadingLaya)
                 }
-                Text("With an OpenRouter key, \(Planner.model) turns each spoken command into ordered steps and Jev chooses every on-screen action. Without it, Jev alone handles single commands. Only the spoken text and app names are sent to OpenRouter.")
+                Text("With an OpenRouter key, \(Planner.model) turns each spoken command into ordered steps and Laya chooses every on-screen action locally. Without it, Laya handles single commands. Only the spoken text and app names are sent to OpenRouter.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 8) {

@@ -6,7 +6,7 @@ final class DecisionTests: XCTestCase {
         let candidates = (0..<300).map { Candidate(id: "action_\($0)", label: "Action \($0)", detail: "Perform action \($0)") }
         let context = CommandContext(command: "Open Finder", application: "Finder", window: "Applications",
                                      previousCommand: nil, previousAction: nil)
-        let body = try JevClient.requestBody(context: context, candidates: candidates)
+        let body = try LayaClient.requestBody(context: context, candidates: candidates)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         let questions = try XCTUnwrap(json["questions"] as? [String: [String: Any]])
         XCTAssertEqual(questions["more"]?["type"] as? String, "noul")
@@ -21,10 +21,10 @@ final class DecisionTests: XCTestCase {
     }
 
     func testCycleAsksOperationAndSpeculativeHeadsInOneRequest() throws {
-        let state = JevClient.CycleState(goal: "search Rick Astley", dictation: nil, application: "Brave", window: "YouTube",
-                                         elements: [JevClient.Element(index: 1, role: "textbox", label: "Search", value: "", place: "page", operations: ["CLICK", "TYPE_TEXT"])],
-                                         available: JevClient.Available(apps: ["Finder"], folders: ["Desktop"], sites: [], menus: []), recentActions: [], previous: nil)
-        let body = try JevClient.cycleBody(state: state, operations: ["CLICK": "Click", "DONE": "Done"], heads: ["click_target": ["e1": "[1] Search"], "type_target": [:]])
+        let state = LayaClient.CycleState(goal: "search Rick Astley", dictation: nil, application: "Brave", window: "YouTube",
+                                         elements: [LayaClient.Element(index: 1, role: "textbox", label: "Search", value: "", place: "page", operations: ["CLICK", "TYPE_TEXT"])],
+                                         available: LayaClient.Available(apps: ["Finder"], folders: ["Desktop"], sites: [], menus: []), recentActions: [], previous: nil)
+        let body = try LayaClient.cycleBody(state: state, operations: ["CLICK": "Click", "DONE": "Done"], heads: ["click_target": ["e1": "[1] Search"], "type_target": [:]])
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         let questions = try XCTUnwrap(json["questions"] as? [String: [String: Any]])
         XCTAssertEqual(Set(questions.keys), ["operation", "click_target", "finishes"])
@@ -34,8 +34,8 @@ final class DecisionTests: XCTestCase {
 
     func testGroundingAsksOneTargetQuestionWithNone() throws {
         let step = PlanStep(kind: .click, target: "video result", ordinal: 1)
-        let context = JevClient.GroundingContext(step: step, goal: "play the first video", application: "Brave", window: "YouTube")
-        let body = try JevClient.groundingBody(context: context, candidates: [Candidate(id: "control_1_Rick", label: "Rick", detail: "Item 1 of 2")])
+        let context = LayaClient.GroundingContext(step: step, goal: "play the first video", application: "Brave", window: "YouTube")
+        let body = try LayaClient.groundingBody(context: context, candidates: [Candidate(id: "control_1_Rick", label: "Rick", detail: "Item 1 of 2")])
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         let questions = try XCTUnwrap(json["questions"] as? [String: [String: Any]])
         let criteria = try XCTUnwrap(questions["target"]?["criteria"] as? [String: String])

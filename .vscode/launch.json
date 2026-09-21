@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:jev-use}",
+            "name": "Debug JevDesktop",
+            "target": "JevDesktop",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug JevDesktop"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:jev-use}",
+            "name": "Release JevDesktop",
+            "target": "JevDesktop",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release JevDesktop"
+        }
+    ]
+}
