@@ -315,7 +315,7 @@ public enum LayaClient {
     private static func chooseLargeCycleHead(state: CycleState, operations: [String: String], head: String,
                                              options: [String: String]) async throws -> Decision.Answer {
         let special = options.filter { $0.key == "none" }
-        let actual = options.filter { $0.key != "none" }
+        let actual = options.filter { $0.key != "none" }.map { ($0.key, $0.value) }
         guard !actual.isEmpty else { throw DecisionError.invalidResponse }
         var winners: [String] = []
         var winnerAnswers: [Decision.Answer] = []
@@ -455,7 +455,44 @@ public enum LayaClient {
     }
 
     public static func ground(context: GroundingContext, candidates: [Candidate]) async throws -> Decision {
-        try await post(groundingBody(context: context, candidates: candidates))
+        guard candidates.count > actionsPerQuestion else {
+            return try await post(groundingBody(context: context, candidates: candidates))
+        }
+
+        var winners: [Candidate] = []
+        var winnerAnswers: [Decision.Answer] = []
+        var noMatch: Decision.Answer?
+        var alreadyDone: Decision.Answer?
+        for lower in stride(from: 0, to: candidates.count, by: actionsPerQuestion) {
+            let upper = min(lower + actionsPerQuestion, candidates.count)
+            let response = try await post(groundingBody(context: context, candidates: Array(candidates[lower..<upper])))
+            alreadyDone = alreadyDone ?? response.answers["already_done"]
+            guard let answer = response.answers["target"], answer.type == "choice" else { throw DecisionError.invalidResponse }
+            if answer.choice == "none" {
+                noMatch = answer
+            } else if let choice = answer.choice, let candidate = candidates.first(where: { $0.id == choice }) {
+                winners.append(candidate)
+                winnerAnswers.append(answer)
+            } else {
+                throw DecisionError.invalidResponse
+            }
+        }
+
+        let target: Decision.Answer
+        if winners.isEmpty {
+            guard let noMatch else { throw DecisionError.invalidResponse }
+            target = noMatch
+        } else if winners.count == 1 {
+            target = winnerAnswers[0]
+        } else {
+            let response = try await post(groundingBody(context: context, candidates: winners))
+            guard let answer = response.answers["target"], answer.type == "choice" else { throw DecisionError.invalidResponse }
+            target = answer
+            alreadyDone = alreadyDone ?? response.answers["already_done"]
+        }
+        var answers = ["target": target]
+        if let alreadyDone { answers["already_done"] = alreadyDone }
+        return Decision(answers: answers)
     }
 
     private struct ServiceError: LocalizedError {
