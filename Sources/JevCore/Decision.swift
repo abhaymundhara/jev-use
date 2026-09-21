@@ -323,7 +323,7 @@ public enum LayaClient {
 
         for lower in stride(from: 0, to: actual.count, by: actionsPerQuestion) {
             let upper = min(lower + actionsPerQuestion, actual.count)
-            var batch = Dictionary(uniqueKeysWithValues: actual[lower..<upper].map { ($0.key, $0.value) })
+            var batch = Dictionary(uniqueKeysWithValues: actual[lower..<upper])
             for item in special { batch[item.key] = item.value }
             let response = try await post(cycleBody(state: state, operations: operations, heads: [head: batch]))
             guard let answer = response.answers[head], answer.type == "choice" else { throw DecisionError.invalidResponse }
